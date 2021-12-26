@@ -1,537 +1,428 @@
- 
+package main
 
- package main 
+import (
+	"errors"
 
-  
+	"fmt"
 
- import ( 
+	"log"
 
-         "errors" 
+	"net"
 
-         "fmt" 
+	"os"
 
-         "log" 
+	"os/signal"
 
-         "net" 
+	"syscall"
 
-         "os" 
+	"time"
 
-         "os/signal" 
+	"github.com/HimbeerserverDE/srp"
 
-         "syscall" 
+	"github.com/anon55555/mt"
 
-         "time" 
+	"github.com/anon55555/mt/rudp"
+)
 
-  
+// mostly HimbeerserverDE/mt-multiserver-proxy copypasta
 
-         "github.com/HimbeerserverDE/srp" 
+// a lot of things were shamelessly stolen from there
 
-         "github.com/anon55555/mt" 
+//well this is actually mostly copypasta from Fleckenstein but they copypastaed it from HimbeerserverDE
 
-         "github.com/anon55555/mt/rudp" 
+type clientState uint8
 
- ) 
+const (
+	csCreated clientState = iota
 
-  
+	csInit
 
- // mostly HimbeerserverDE/mt-multiserver-proxy copypasta 
+	csActive
 
- // a lot of things were shamelessly stolen from there
+	csSleeping
+)
 
- //well this is actually mostly copypasta from Fleckenstein but they copypastaed it from HimbeerserverDE
+type directive uint8
 
- type clientState uint8 
+const (
+	dirLog directive = iota
+)
 
-  
+var sc mt.Peer
 
- const ( 
+var cstate clientState
 
-         csCreated clientState = iota 
+var dir directive
 
-         csInit 
+var pos mt.PlayerPos
 
-         csActive 
+var auth struct {
+	method mt.AuthMethods
 
-         csSleeping 
+	salt, srpA, a, srpK []byte
+}
 
- ) 
+const (
+	name = "<USERNAME>"
 
-  
+	password = "<PASSWORD>"
 
- type directive uint8 
+	address = "<SERVER_IP>:<SERVER_PORT>"
+)
 
-  
+//on chat message
 
- const ( 
+func onChat(pkt mt.Pkt) {
 
-         dirLog directive = iota 
+	switch cmd := pkt.Cmd.(type) {
 
- ) 
+	case *mt.ToCltChatMsg:
 
-  
+		text := cmd.Text
 
- var sc mt.Peer 
+		f, err := os.OpenFile("chat_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 
- var cstate clientState 
+		if err != nil {
 
- var dir directive 
+			log.Fatal(err)
 
- var pos mt.PlayerPos 
+		}
 
-  
+		if _, err := f.Write([]byte("[" + time.Now().Format("2006-01-02 15:04:05") + "]" + text + "\n")); err != nil {
 
- var auth struct { 
+			log.Fatal(err)
 
-         method              mt.AuthMethods 
+		}
 
-         salt, srpA, a, srpK []byte 
+	}
 
- } 
+}
 
-  
+func process(pkt mt.Pkt) {
 
- const ( 
+	switch cmd := pkt.Cmd.(type) {
 
-         name     = "<USERNAME>" 
+	case *mt.ToCltHello:
 
-         password = "<PASSWORD>" 
+		if auth.method != 0 {
 
-         address  = "<SERVER_IP>:<SERVER_PORT>" 
+			fmt.Println("unexpected authentication")
 
- ) 
+			sc.Close()
 
-  
+			return
 
- //on chat message 
+		}
 
- func onChat(pkt mt.Pkt) { 
+		cstate++
 
-         switch cmd := pkt.Cmd.(type) { 
+		if cmd.AuthMethods&mt.FirstSRP != 0 {
 
-         case *mt.ToCltChatMsg: 
+			auth.method = mt.FirstSRP
 
-  
+		} else {
 
-                 text := cmd.Text 
+			auth.method = mt.SRP
 
-  
+		}
 
-                 f, err := os.OpenFile("chat_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644) 
+		if cmd.SerializeVer != 28 {
 
-                 if err != nil { 
+			fmt.Println("invalid serializeVer")
 
-                         log.Fatal(err) 
+			return
 
-                 } 
+		}
 
-                 if _, err := f.Write([]byte("[" + time.Now().Format("2006-01-02 15:04:05") + "]" + text + "\n")); err != nil { 
+		switch auth.method {
 
-                         log.Fatal(err) 
+		case mt.SRP:
 
-                 } 
+			var err error
 
-         } 
+			auth.srpA, auth.a, err = srp.InitiateHandshake()
 
- } 
+			if err != nil {
 
-  
+				fmt.Println(err)
 
- func process(pkt mt.Pkt) { 
+				return
 
-         switch cmd := pkt.Cmd.(type) { 
+			}
 
-         case *mt.ToCltHello: 
+			sc.SendCmd(&mt.ToSrvSRPBytesA{
 
-                 if auth.method != 0 { 
+				A: auth.srpA,
 
-                         fmt.Println("unexpected authentication") 
+				NoSHA1: true,
+			})
 
-                         sc.Close() 
+		case mt.FirstSRP:
 
-                         return 
+			salt, verifier, err := srp.NewClient([]byte(name), []byte(password))
 
-                 } 
+			if err != nil {
 
-  
+				fmt.Println(err)
 
-                 cstate++ 
+				return
 
-  
+			}
 
-                 if cmd.AuthMethods&mt.FirstSRP != 0 { 
+			sc.SendCmd(&mt.ToSrvFirstSRP{
 
-                         auth.method = mt.FirstSRP 
+				Salt: salt,
 
-                 } else { 
+				Verifier: verifier,
 
-                         auth.method = mt.SRP 
+				EmptyPasswd: false,
+			})
 
-                 } 
+		default:
 
-  
+			fmt.Println("invalid auth method")
 
-                 if cmd.SerializeVer != 28 { 
+			sc.Close()
 
-                         fmt.Println("invalid serializeVer") 
+		}
 
-                         return 
+	case *mt.ToCltSRPBytesSaltB:
 
-                 } 
+		if auth.method != mt.SRP {
 
-  
+			fmt.Println("multiple authentication attempts")
 
-                 switch auth.method { 
+			return
 
-                 case mt.SRP: 
+		}
 
-                         var err error 
+		var err error
 
-                         auth.srpA, auth.a, err = srp.InitiateHandshake() 
+		auth.srpK, err = srp.CompleteHandshake(auth.srpA, auth.a, []byte(name), []byte(password), cmd.Salt, cmd.B)
 
-                         if err != nil { 
+		if err != nil {
 
-                                 fmt.Println(err) 
+			fmt.Println(err)
 
-                                 return 
+			return
 
-                         } 
+		}
 
-  
+		M := srp.ClientProof([]byte(name), cmd.Salt, auth.srpA, cmd.B, auth.srpK)
 
-                         sc.SendCmd(&mt.ToSrvSRPBytesA{ 
+		if M == nil {
 
-                                 A:      auth.srpA, 
+			fmt.Println("SRP safety check fail")
 
-                                 NoSHA1: true, 
+			return
 
-                         }) 
+		}
 
-                 case mt.FirstSRP: 
+		sc.SendCmd(&mt.ToSrvSRPBytesM{
 
-                         salt, verifier, err := srp.NewClient([]byte(name), []byte(password)) 
+			M: M,
+		})
 
-                         if err != nil { 
+	case *mt.ToCltDisco:
 
-                                 fmt.Println(err) 
+		fmt.Println("deny access", cmd)
 
-                                 return 
+		os.Exit(0)
 
-                         } 
+	case *mt.ToCltAcceptAuth:
 
-  
+		auth = struct {
+			method mt.AuthMethods
 
-                         sc.SendCmd(&mt.ToSrvFirstSRP{ 
+			salt, srpA, a, srpK []byte
+		}{}
 
-                                 Salt:        salt, 
+		sc.SendCmd(&mt.ToSrvInit2{Lang: "en_US"})
 
-                                 Verifier:    verifier, 
+	case *mt.ToCltTimeOfDay:
 
-                                 EmptyPasswd: false, 
+		if cstate == csInit {
 
-                         }) 
+			sc.SendCmd(&mt.ToSrvCltReady{
 
-                 default: 
+				Major: 5,
 
-                         fmt.Println("invalid auth method") 
+				Minor: 5,
 
-                         sc.Close() 
+				Patch: 0,
 
-                 } 
+				Reserved: 0,
 
-  
+				Formspec: 4,
 
-         case *mt.ToCltSRPBytesSaltB: 
+				Version: "🏳‍🌈",
+			})
 
-                 if auth.method != mt.SRP { 
+			cstate++
 
-                         fmt.Println("multiple authentication attempts") 
+		}
 
-                         return 
+	case *mt.ToCltDeathScreen:
 
-                 } 
+		sc.SendCmd(&mt.ToSrvRespawn{})
 
-  
+	case *mt.ToCltMovePlayer:
 
-                 var err error 
+		pos.SetPos(cmd.Pos)
 
-                 auth.srpK, err = srp.CompleteHandshake(auth.srpA, auth.a, []byte(name), []byte(password), cmd.Salt, cmd.B) 
+	case *mt.ToCltBreath:
 
-                 if err != nil { 
+		if cstate == csActive {
 
-                         fmt.Println(err) 
+			cstate++
 
-                         return 
+			switch dir {
 
-                 } 
+			case dirLog:
 
-  
+				fmt.Println("Logging chat messages")
 
-                 M := srp.ClientProof([]byte(name), cmd.Salt, auth.srpA, cmd.B, auth.srpK) 
+			}
 
-                 if M == nil { 
+		}
 
-                         fmt.Println("SRP safety check fail") 
+	}
 
-                         return 
+}
 
-                 } 
+func main() {
 
-  
+	if len(os.Args) != 2 {
 
-                 sc.SendCmd(&mt.ToSrvSRPBytesM{ 
+		fmt.Println("invalid args")
 
-                         M: M, 
+		return
 
-                 }) 
+	}
 
-  
+	switch os.Args[1] {
 
-         case *mt.ToCltDisco: 
+	case "log":
 
-                 fmt.Println("deny access", cmd) 
+		dir = dirLog
 
-                 os.Exit(0) 
+	default:
 
-  
+		fmt.Println("invalid args")
 
-         case *mt.ToCltAcceptAuth: 
+		return
 
-                 auth = struct { 
+	}
 
-                         method              mt.AuthMethods 
+	addr, err := net.ResolveUDPAddr("udp", address)
 
-                         salt, srpA, a, srpK []byte 
+	if err != nil {
 
-                 }{} 
+		fmt.Println("address resolution fail")
 
-                 sc.SendCmd(&mt.ToSrvInit2{Lang: "en_US"}) 
+		return
 
-  
+	}
 
-         case *mt.ToCltTimeOfDay: 
+	conn, err := net.DialUDP("udp", nil, addr)
 
-                 if cstate == csInit { 
+	if err != nil {
 
-                         sc.SendCmd(&mt.ToSrvCltReady{ 
+		fmt.Println("connection fail")
 
-                                 Major:    5, 
+		return
 
-                                 Minor:    5, 
+	}
 
-                                 Patch:    0, 
+	sc = mt.Connect(conn)
 
-                                 Reserved: 0, 
+	go func() {
 
-                                 Formspec: 4, 
+		init := make(chan struct{})
 
-                                 Version:  "🏳‍🌈", 
+		defer close(init)
 
-                         }) 
+		go func(init <-chan struct{}) {
 
-  
+			select {
 
-                         cstate++ 
+			case <-init:
 
-                 } 
+			case <-time.After(10 * time.Second):
 
-  
+				fmt.Println("timeout")
 
-         case *mt.ToCltDeathScreen: 
+				sc.Close()
 
-                 sc.SendCmd(&mt.ToSrvRespawn{}) 
+			}
 
-  
+		}(init)
 
-         case *mt.ToCltMovePlayer: 
+		for cstate == csCreated {
 
-                 pos.SetPos(cmd.Pos) 
+			sc.SendCmd(&mt.ToSrvInit{
 
-  
+				SerializeVer: 28,
 
-         case *mt.ToCltBreath: 
+				MinProtoVer: 39,
 
-                 if cstate == csActive { 
+				MaxProtoVer: 39,
 
-                         cstate++ 
+				PlayerName: name,
+			})
 
-  
+			time.Sleep(500 * time.Millisecond)
 
-                         switch dir { 
+		}
 
-                         case dirLog: 
+	}()
 
-                                 fmt.Println("Logging chat messages") 
+	go func() {
 
-                         } 
+		sig := make(chan os.Signal, 1)
 
-                 } 
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 
-         } 
+		<-sig
 
- } 
+		sc.Close()
 
-  
+		os.Exit(0)
 
- func main() { 
+	}()
 
-         if len(os.Args) != 2 { 
+	for {
 
-                 fmt.Println("invalid args") 
+		pkt, err := sc.Recv()
 
-                 return 
+		if err != nil {
 
-         } 
+			if errors.Is(err, net.ErrClosed) {
 
-  
+				if errors.Is(sc.WhyClosed(), rudp.ErrTimedOut) {
 
-         switch os.Args[1] { 
+					fmt.Println("timeout")
 
-         case "log": 
+				} else {
 
-                 dir = dirLog 
+					fmt.Println("disconnect")
 
-         default: 
+				}
 
-                 fmt.Println("invalid args") 
+				break
 
-                 return 
+			}
 
-         } 
+			fmt.Println(err)
 
-  
+			continue
 
-         addr, err := net.ResolveUDPAddr("udp", address) 
+		}
 
-         if err != nil { 
+		process(pkt)
 
-                 fmt.Println("address resolution fail") 
+		onChat(pkt)
 
-                 return 
+	}
 
-         } 
-
-  
-
-         conn, err := net.DialUDP("udp", nil, addr) 
-
-         if err != nil { 
-
-                 fmt.Println("connection fail") 
-
-                 return 
-
-         } 
-
-  
-
-         sc = mt.Connect(conn) 
-
-  
-
-         go func() { 
-
-                 init := make(chan struct{}) 
-
-                 defer close(init) 
-
-  
-
-                 go func(init <-chan struct{}) { 
-
-                         select { 
-
-                         case <-init: 
-
-                         case <-time.After(10 * time.Second): 
-
-                                 fmt.Println("timeout") 
-
-                                 sc.Close() 
-
-                         } 
-
-                 }(init) 
-
-  
-
-                 for cstate == csCreated { 
-
-                         sc.SendCmd(&mt.ToSrvInit{ 
-
-                                 SerializeVer: 28, 
-
-                                 MinProtoVer:  39, 
-
-                                 MaxProtoVer:  39, 
-
-                                 PlayerName:   name, 
-
-                         }) 
-
-                         time.Sleep(500 * time.Millisecond) 
-
-                 } 
-
-         }() 
-
-  
-
-         go func() { 
-
-                 sig := make(chan os.Signal, 1) 
-
-                 signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP) 
-
-                 <-sig 
-
-  
-
-                 sc.Close() 
-
-                 os.Exit(0) 
-
-         }() 
-
-  
-
-         for { 
-
-                 pkt, err := sc.Recv() 
-
-                 if err != nil { 
-
-                         if errors.Is(err, net.ErrClosed) { 
-
-                                 if errors.Is(sc.WhyClosed(), rudp.ErrTimedOut) { 
-
-                                         fmt.Println("timeout") 
-
-                                 } else { 
-
-                                         fmt.Println("disconnect") 
-
-                                 } 
-
-  
-
-                                 break 
-
-                         } 
-
-  
-
-                         fmt.Println(err) 
-
-                         continue 
-
-                 } 
-
-  
-
-                 process(pkt) 
-
-                 onChat(pkt) 
-
-         } 
-
- }
+}
