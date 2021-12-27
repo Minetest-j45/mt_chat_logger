@@ -154,11 +154,11 @@ func process(pkt mt.Pkt) {
 		if cstate == csInit {
 			sc.SendCmd(&mt.ToSrvCltReady{
 				Major:    5,
-				Minor:    5,
-				Patch:    0,
+				Minor:    4,
+				Patch:    1,
 				Reserved: 0,
 				Formspec: 4,
-				Version:  "🏳‍🌈", // using unicode here is a bad idea
+				Version:  "mt_chat_logger v0.0.0",
 			})
 
 			cstate++
