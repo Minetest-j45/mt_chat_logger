@@ -15,19 +15,12 @@ import (
 	"github.com/anon55555/mt/rudp"
 )
 
-// begin config
-const (
-	name     = "<USERNAME>"
-	password = "<PASSWORD>"
-	address  = "<SERVER_IP>:<SERVER_PORT>"
-)
-
-// end config
-
 // mostly HimbeerserverDE/mt-multiserver-proxy copypasta
 // a lot of things were shamelessly stolen from there
 // well this is actually mostly copypasta from Fleckenstein
 // but they copypastaed it from HimbeerserverDE
+
+var name, password, address string
 
 type clientState uint8
 
@@ -38,33 +31,13 @@ const (
 	csSleeping
 )
 
-type directive uint8
-
-const dirLog directive = iota
-
 var sc mt.Peer
 var cstate clientState
-var dir directive
 var pos mt.PlayerPos
 
 var auth struct {
 	method              mt.AuthMethods
 	salt, srpA, a, srpK []byte
-}
-
-func onChat(pkt mt.Pkt) {
-	switch cmd := pkt.Cmd.(type) {
-	case *mt.ToCltChatMsg:
-		text := cmd.Text
-		f, err := os.OpenFile("chat_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		if _, err := f.Write([]byte("[" + time.Now().Format("2006-01-02 15:04:05") + "]" + text + "\n")); err != nil {
-			log.Fatal(err)
-		}
-	}
 }
 
 func process(pkt mt.Pkt) {
@@ -171,27 +144,30 @@ func process(pkt mt.Pkt) {
 		if cstate == csActive {
 			cstate++
 
-			switch dir {
-			case dirLog:
-				fmt.Println("Logging chat messages")
-			}
+			fmt.Println("Logging chat messages")
+		}
+	case *mt.ToCltChatMsg:
+		text := cmd.Text
+		f, err := os.OpenFile("chat_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if _, err := f.Write([]byte("[" + time.Now().Format("2006-01-02 15:04:05") + "]" + text + "\n")); err != nil {
+			log.Fatal(err)
 		}
 	}
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Println("invalid args")
+	if len(os.Args) != 4 {
+		fmt.Println("invalid args, the way to lay it out is:\n`go run . <USERNAME> <PASSWORD> <SERVER_IP>:<SERVER_PORT>`")
 		return
 	}
 
-	switch os.Args[1] {
-	case "log":
-		dir = dirLog
-	default:
-		fmt.Println("invalid args")
-		return
-	}
+	name = os.Args[1]
+	password = os.Args[2]
+	address = os.Args[3]
 
 	addr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
@@ -258,6 +234,5 @@ func main() {
 		}
 
 		process(pkt)
-		onChat(pkt)
 	}
 }
