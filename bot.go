@@ -148,7 +148,7 @@ func process(pkt mt.Pkt) {
 		}
 	case *mt.ToCltChatMsg:
 		text := cmd.Text
-		f, err := os.OpenFile("chat_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		f, err := os.OpenFile("chat_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 		if err != nil {
 			log.Fatal(err)
 		}
