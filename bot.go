@@ -148,14 +148,8 @@ func process(pkt mt.Pkt) {
 		}
 	case *mt.ToCltChatMsg:
 		text := cmd.Text
-		f, err := os.OpenFile("chat_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-		if err != nil {
-			log.Fatal(err)
-		}
 
-		if _, err := f.Write([]byte("[" + time.Now().Format("2006-01-02 15:04:05") + "]" + text + "\n")); err != nil {
-			log.Fatal(err)
-		}
+		log.Println(text)
 	}
 }
 
@@ -215,6 +209,15 @@ func main() {
 		sc.Close()
 		os.Exit(0)
 	}()
+
+	logFile, err := os.OpenFile("chat_log.txt", os.O_APPEND|os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer logFile.Close()
+
+	log.SetOutput(logFile)
+	log.SetFlags(log.LstdFlags)
 
 	for {
 		pkt, err := sc.Recv()
